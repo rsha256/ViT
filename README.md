@@ -1,0 +1,2 @@
+# ViT
+This ViT Project achieves over 80% accuracy on Cifar-10, outperforming LeNet and other well-known CNNs. This is also formatted and serves as a JAX homework assignment for CS 182, as our group's final Project.
