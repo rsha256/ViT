@@ -10,6 +10,17 @@ PRNGKey = Any
 Shape = Tuple[int]
 Dtype = Any
 
+# First, you will implement the components of a vision transformer, and then put them together
+# in the VisionTransformer class.
+
+class IdentityLayer(nn.Module):
+  """Identity layer, convenient for giving a name to an array."""
+
+  @nn.compact
+  def __call__(self, x):
+    return 
+
+
 
 class AddPositionEmbs(nn.Module):
   """Adds learned positional embeddings to the inputs.
@@ -80,8 +91,8 @@ class Encoder1DBlock(nn.Module):
     inputs: input data.
     mlp_dim: dimension of the mlp on top of attention block.
     dtype: the dtype of the computation (default: float32).
-    dropout_rate: dropout rate.
-    attention_dropout_rate: dropout for attention heads.
+    dropout: dropout rate.
+    attn_dropout: dropout for attention heads.
     deterministic: bool, deterministic or not (to apply dropout).
     num_heads: Number of heads in nn.MultiHeadDotProductAttention
   """
@@ -89,8 +100,8 @@ class Encoder1DBlock(nn.Module):
   mlp_dim: int
   num_heads: int
   dtype: Dtype = jnp.float32
-  dropout_rate: float = 0.1
-  attention_dropout_rate: float = 0.1
+  dropout: float = 0.1
+  attn_dropout: float = 0.1
 
   @nn.compact
   def __call__(self, inputs, *, deterministic):
@@ -110,16 +121,16 @@ class Encoder1DBlock(nn.Module):
         kernel_init=nn.initializers.xavier_uniform(),
         broadcast_dropout=False,
         deterministic=deterministic,
-        dropout_rate=self.attention_dropout_rate,
+        dropout=self.attn_dropout,
         num_heads=self.num_heads)(
             x, x)
-    x = nn.Dropout(rate=self.dropout_rate)(x, deterministic=deterministic)
+    x = nn.Dropout(rate=self.dropout)(x, deterministic=deterministic)
     x = x + inputs
 
     # MLP block.
     y = nn.LayerNorm(dtype=self.dtype)(x)
     y = MLPBlock(
-        mlp_dim=self.mlp_dim, dtype=self.dtype, dropout_rate=self.dropout_rate)(
+        mlp_dim=self.mlp_dim, dtype=self.dtype, dropout=self.dropout)(
             y, deterministic=deterministic)
 
     return x + y
@@ -127,21 +138,21 @@ class Encoder1DBlock(nn.Module):
 
 
 
-class Encoder(nn.Module):
+class Transformer(nn.Module):
   """Transformer Model Encoder for sequence to sequence translation.
   Attributes:
     num_layers: number of layers
     mlp_dim: dimension of the mlp on top of attention block
     num_heads: Number of heads in nn.MultiHeadDotProductAttention
-    dropout_rate: dropout rate.
-    attention_dropout_rate: dropout rate in self attention.
+    dropout: dropout rate.
+    attn_dropout: dropout rate in self attention.
   """
 
   num_layers: int
   mlp_dim: int
   num_heads: int
-  dropout_rate: float = 0.1
-  attention_dropout_rate: float = 0.1
+  dropout: float = 0.1
+  attn_dropout: float = 0.1
   add_position_embedding: bool = True
 
   @nn.compact
@@ -160,14 +171,14 @@ class Encoder(nn.Module):
           posemb_init=nn.initializers.normal(stddev=0.02),  # from BERT.
           name='posembed_input')(
               x)
-      x = nn.Dropout(rate=self.dropout_rate)(x, deterministic=not train)
+      x = nn.Dropout(rate=self.dropout)(x, deterministic=not train)
 
     # Input Encoder
     for lyr in range(self.num_layers):
       x = Encoder1DBlock(
           mlp_dim=self.mlp_dim,
-          dropout_rate=self.dropout_rate,
-          attention_dropout_rate=self.attention_dropout_rate,
+          dropout=self.dropout,
+          attn_dropout=self.attn_dropout,
           name=f'encoderblock_{lyr}',
           num_heads=self.num_heads)(
               x, deterministic=not train)
@@ -182,12 +193,9 @@ class VisionTransformer(nn.Module):
 
   num_classes: int
   patch_size: Any
-  transformer: Any
   hidden_size: int
-  representation_size: Optional[int] = None
-  classifier: str = 'token'
-  head_bias_init: float = 0.
-  encoder: Type[nn.Module] = Encoder
+  transformer_config: Any
+  cls_head_bias_init: float = 0.
   model_name: Optional[str] = None
   
   @nn.compact
@@ -207,26 +215,19 @@ class VisionTransformer(nn.Module):
 
     # Here, x is a grid of embeddings.
 
-    # Transformer
     n, h, w, c = x.shape
     x = jnp.reshape(x, [n, h * w, c])
-
-    # If we want to add a class token, add it here.
-    #if self.classifier in ['token', 'token_unpooled']:
+    
+    # Add the classification token.
     cls = self.param('cls', nn.initializers.zeros, (1, 1, c))
     cls = jnp.tile(cls, [n, 1, 1])
     x = jnp.concatenate([cls, x], axis=1)
 
-    x = self.encoder(name='Transformer', **self.transformer)(x, train=train)
+    # Transformer.
+    x = Transformer(name='Transformer', **self.transformer_config)(x, train=train)
 
-    if self.classifier == 'token':
-      x = x[:, 0]
-    elif self.classifier == 'gap':
-      x = jnp.mean(x, axis=list(range(1, x.ndim - 1)))  # (1,) or (1,2)
-    elif self.classifier in ['unpooled', 'token_unpooled']:
-      pass
-    else:
-      raise ValueError(f'Invalid classifier={self.classifier}')
+    # Only keep the classification token.
+    x = x[:, 0]
 
     # Give a name to the activation before the last dense layer.
     x = IdentityLayer(name='pre_logits')(x)
