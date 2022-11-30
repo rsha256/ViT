@@ -13,229 +13,229 @@ Dtype = Any
 # First, you will implement the components of a vision transformer, and then put them together
 # in the VisionTransformer class.
 
+
 class IdentityLayer(nn.Module):
-  """Identity layer, convenient for giving a name to an array."""
+    """Identity layer, convenient for giving a name to an array."""
 
-  @nn.compact
-  def __call__(self, x):
-    return 
-
+    @nn.compact
+    def __call__(self, x):
+        return x
 
 
 class AddPositionEmbs(nn.Module):
-  """Adds learned positional embeddings to the inputs.
-  Attributes:
-    posemb_init: positional embedding initializer.
-  """
-
-  posemb_init: Callable[[PRNGKey, Shape, Dtype], Array]
-
-  @nn.compact
-  def __call__(self, inputs):
-    """Forward pass of the AddPositionEmbs module.
-    Args:
-      inputs: Inputs to the layer.
-    Returns:
-      Output tensor with shape `(bs, timesteps, in_dim)`.
+    """Adds learned positional embeddings to the inputs.
+    Attributes:
+      posemb_init: positional embedding initializer.
     """
-    # inputs.shape is (batch_size, seq_len, emb_dim).
-    assert inputs.ndim == 3, ('Number of dimensions should be 3,'
-                              ' but it is: %d' % inputs.ndim)
-    pos_emb_shape = (1, inputs.shape[1], inputs.shape[2])
-    pe = self.param('pos_embedding', self.posemb_init, pos_emb_shape)
-    return inputs + pe
+
+    posemb_init: Callable[[PRNGKey, Shape, Dtype], Array]
+
+    @nn.compact
+    def __call__(self, inputs):
+        """Forward pass of the AddPositionEmbs module.
+        Args:
+          inputs: Inputs to the layer.
+        Returns:
+          Output tensor with shape `(bs, timesteps, in_dim)`.
+        """
+        # inputs.shape is (batch_size, seq_len, emb_dim).
+        assert inputs.ndim == 3, (
+            "Number of dimensions should be 3," " but it is: %d" % inputs.ndim
+        )
+        pos_emb_shape = (1, inputs.shape[1], inputs.shape[2])
+        pe = self.param("pos_embedding", self.posemb_init, pos_emb_shape)
+        return inputs + pe
 
 
+class MlpBlock(nn.Module):
+    """Transformer MLP / feed-forward block."""
 
-class MLPBlock(nn.Module):
-  """Transformer MLP / feed-forward block."""
+    mlp_dim: int
+    dtype: Dtype = jnp.float32
+    out_dim: Optional[int] = None
+    dropout_rate: float = 0.1
+    kernel_init: Callable[
+        [PRNGKey, Shape, Dtype], Array
+    ] = nn.initializers.xavier_uniform()
+    bias_init: Callable[[PRNGKey, Shape, Dtype], Array] = nn.initializers.normal(
+        stddev=1e-6
+    )
 
-  mlp_dim: int
-  dtype: Dtype = jnp.float32
-  out_dim: Optional[int] = None
-  dropout_rate: float = 0.1
-  kernel_init: Callable[[PRNGKey, Shape, Dtype],
-                        Array] = nn.initializers.xavier_uniform()
-  bias_init: Callable[[PRNGKey, Shape, Dtype],
-                      Array] = nn.initializers.normal(stddev=1e-6)
-
-  @nn.compact
-  def __call__(self, inputs, *, deterministic):
-    """Forward pass of the Transformer MLPBlock module."""
-    actual_out_dim = inputs.shape[-1] if self.out_dim is None else self.out_dim
-    x = nn.Dense(
-        features=self.mlp_dim,
-        dtype=self.dtype,
-        kernel_init=self.kernel_init,
-        bias_init=self.bias_init)(  # pytype: disable=wrong-arg-types
-            inputs)
-    x = nn.gelu(x)
-    x = nn.Dropout(rate=self.dropout_rate)(x, deterministic=deterministic)
-    output = nn.Dense(
-        features=actual_out_dim,
-        dtype=self.dtype,
-        kernel_init=self.kernel_init,
-        bias_init=self.bias_init)(  # pytype: disable=wrong-arg-types
-            x)
-    output = nn.Dropout(
-        rate=self.dropout_rate)(
-            output, deterministic=deterministic)
-    return output
-
-
+    @nn.compact
+    def __call__(self, inputs, *, deterministic):
+        """Forward pass of the Transformer MlpBlock module."""
+        actual_out_dim = inputs.shape[-1] if self.out_dim is None else self.out_dim
+        x = nn.Dense(
+            features=self.mlp_dim,
+            dtype=self.dtype,
+            kernel_init=self.kernel_init,
+            bias_init=self.bias_init,
+        )(  # pytype: disable=wrong-arg-types
+            inputs
+        )
+        x = nn.gelu(x)
+        x = nn.Dropout(rate=self.dropout_rate)(x, deterministic=deterministic)
+        output = nn.Dense(
+            features=actual_out_dim,
+            dtype=self.dtype,
+            kernel_init=self.kernel_init,
+            bias_init=self.bias_init,
+        )(  # pytype: disable=wrong-arg-types
+            x
+        )
+        output = nn.Dropout(rate=self.dropout_rate)(output, deterministic=deterministic)
+        return output
 
 
 class Encoder1DBlock(nn.Module):
-  """Transformer encoder layer.
-  Attributes:
-    inputs: input data.
-    mlp_dim: dimension of the mlp on top of attention block.
-    dtype: the dtype of the computation (default: float32).
-    dropout: dropout rate.
-    attn_dropout: dropout for attention heads.
-    deterministic: bool, deterministic or not (to apply dropout).
-    num_heads: Number of heads in nn.MultiHeadDotProductAttention
-  """
-
-  mlp_dim: int
-  num_heads: int
-  dtype: Dtype = jnp.float32
-  dropout: float = 0.1
-  attn_dropout: float = 0.1
-
-  @nn.compact
-  def __call__(self, inputs, *, deterministic):
-    """Forward pass of the Encoder1DBlock module.
-    Args:
-      inputs: Inputs to the layer.
-      deterministic: Dropout will not be applied when set to true.
-    Returns:
-      output after transformer encoder block.
+    """Transformer encoder layer.
+    Attributes:
+      inputs: input data.
+      mlp_dim: dimension of the mlp on top of attention block.
+      dtype: the dtype of the computation (default: float32).
+      dropout_rate: dropout rate.
+      attention_dropout_rate: dropout for attention heads.
+      deterministic: bool, deterministic or not (to apply dropout).
+      num_heads: Number of heads in nn.MultiHeadDotProductAttention
     """
 
-    # Attention block.
-    assert inputs.ndim == 3, f'Expected (batch, seq, hidden) got {inputs.shape}'
-    x = nn.LayerNorm(dtype=self.dtype)(inputs)
-    x = nn.MultiHeadDotProductAttention(
-        dtype=self.dtype,
-        kernel_init=nn.initializers.xavier_uniform(),
-        broadcast_dropout=False,
-        deterministic=deterministic,
-        dropout=self.attn_dropout,
-        num_heads=self.num_heads)(
-            x, x)
-    x = nn.Dropout(rate=self.dropout)(x, deterministic=deterministic)
-    x = x + inputs
+    mlp_dim: int
+    num_heads: int
+    dtype: Dtype = jnp.float32
+    dropout_rate: float = 0.1
+    attention_dropout_rate: float = 0.1
 
-    # MLP block.
-    y = nn.LayerNorm(dtype=self.dtype)(x)
-    y = MLPBlock(
-        mlp_dim=self.mlp_dim, dtype=self.dtype, dropout=self.dropout)(
-            y, deterministic=deterministic)
+    @nn.compact
+    def __call__(self, inputs, *, deterministic):
+        """Forward pass of the Encoder1DBlock module.
+        Args:
+          inputs: Inputs to the layer.
+          deterministic: Dropout will not be applied when set to true.
+        Returns:
+          output after transformer encoder block.
+        """
 
-    return x + y
+        # Attention block.
+        assert inputs.ndim == 3, f"Expected (batch, seq, hidden) got {inputs.shape}"
+        x = nn.LayerNorm(dtype=self.dtype)(inputs)
+        x = nn.MultiHeadDotProductAttention(
+            dtype=self.dtype,
+            kernel_init=nn.initializers.xavier_uniform(),
+            broadcast_dropout=False,
+            deterministic=deterministic,
+            dropout_rate=self.attention_dropout_rate,
+            num_heads=self.num_heads,
+        )(x, x)
+        x = nn.Dropout(rate=self.dropout_rate)(x, deterministic=deterministic)
+        x = x + inputs
+
+        # MLP block.
+        y = nn.LayerNorm(dtype=self.dtype)(x)
+        y = MlpBlock(
+            mlp_dim=self.mlp_dim, dtype=self.dtype, dropout_rate=self.dropout_rate
+        )(y, deterministic=deterministic)
+
+        return x + y
 
 
-
-
-class Transformer(nn.Module):
-  """Transformer Model Encoder for sequence to sequence translation.
-  Attributes:
-    num_layers: number of layers
-    mlp_dim: dimension of the mlp on top of attention block
-    num_heads: Number of heads in nn.MultiHeadDotProductAttention
-    dropout: dropout rate.
-    attn_dropout: dropout rate in self attention.
-  """
-
-  num_layers: int
-  mlp_dim: int
-  num_heads: int
-  dropout: float = 0.1
-  attn_dropout: float = 0.1
-  add_position_embedding: bool = True
-
-  @nn.compact
-  def __call__(self, x, *, train):
-    """Applies Transformer model on the inputs.
-    Args:
-      x: Inputs to the layer.
-      train: Set to `True` when training.
-    Returns:
-      output of a transformer encoder.
+class Encoder(nn.Module):
+    """Transformer Model Encoder for sequence to sequence translation.
+    Attributes:
+      num_layers: number of layers
+      mlp_dim: dimension of the mlp on top of attention block
+      num_heads: Number of heads in nn.MultiHeadDotProductAttention
+      dropout: dropout rate.
+      attn_dropout: dropout rate in self attention.
     """
-    assert x.ndim == 3  # (batch, len, emb)
 
-    if self.add_position_embedding:
-      x = AddPositionEmbs(
-          posemb_init=nn.initializers.normal(stddev=0.02),  # from BERT.
-          name='posembed_input')(
-              x)
-      x = nn.Dropout(rate=self.dropout)(x, deterministic=not train)
+    num_layers: int
+    mlp_dim: int
+    num_heads: int
+    dropout_rate: float = 0.1
+    attention_dropout_rate: float = 0.1
+    add_position_embedding: bool = True
 
-    # Input Encoder
-    for lyr in range(self.num_layers):
-      x = Encoder1DBlock(
-          mlp_dim=self.mlp_dim,
-          dropout=self.dropout,
-          attn_dropout=self.attn_dropout,
-          name=f'encoderblock_{lyr}',
-          num_heads=self.num_heads)(
-              x, deterministic=not train)
-    encoded = nn.LayerNorm(name='encoder_norm')(x)
+    @nn.compact
+    def __call__(self, x, *, train):
+        """Applies Transformer model on the inputs.
+        Args:
+          x: Inputs to the layer.
+          train: Set to `True` when training.
+        Returns:
+          output of a transformer encoder.
+        """
+        assert x.ndim == 3  # (batch, len, emb)
 
-    return encoded
+        if self.add_position_embedding:
+            x = AddPositionEmbs(
+                posemb_init=nn.initializers.normal(stddev=0.02),  # from BERT.
+                name="posembed_input",
+            )(x)
+            x = nn.Dropout(rate=self.dropout_rate)(x, deterministic=not train)
 
-  
+        # Input Encoder
+        for lyr in range(self.num_layers):
+            x = Encoder1DBlock(
+                mlp_dim=self.mlp_dim,
+                dropout_rate=self.dropout_rate,
+                attention_dropout_rate=self.attention_dropout_rate,
+                name=f"encoderblock_{lyr}",
+                num_heads=self.num_heads,
+            )(x, deterministic=not train)
+        encoded = nn.LayerNorm(name="encoder_norm")(x)
+
+        return encoded
+
 
 class VisionTransformer(nn.Module):
-  """VisionTransformer."""
+    """VisionTransformer."""
 
-  num_classes: int
-  patch_size: Any
-  hidden_size: int
-  transformer_config: Any
-  cls_head_bias_init: float = 0.
-  model_name: Optional[str] = None
-  
-  @nn.compact
-  def __call__(self, inputs, *, train):
+    num_classes: int
+    patch_size: Any
+    hidden_size: int
+    transformer_config: Any
+    cls_head_bias_init: float = 0.0
+    model_name: Optional[str] = None
 
-    x = inputs
-    n, h, w, c = x.shape
+    @nn.compact
+    def __call__(self, inputs, *, train):
 
-    # We can merge s2d+emb into a single conv; it's the same.
-    x = nn.Conv(
-        features=self.hidden_size,
-        kernel_size=self.patch_size,
-        strides=self.patch_size,
-        padding='VALID',
-        name='embedding')(
-            x)
+        x = inputs
+        n, h, w, c = x.shape
 
-    # Here, x is a grid of embeddings.
+        # We can merge s2d+emb into a single conv; it's the same.
+        x = nn.Conv(
+            features=self.hidden_size,
+            kernel_size=(self.patch_size, self.patch_size),
+            strides=(self.patch_size, self.patch_size),
+            padding="VALID",
+            name="embedding",
+        )(x)
 
-    n, h, w, c = x.shape
-    x = jnp.reshape(x, [n, h * w, c])
-    
-    # Add the classification token.
-    cls = self.param('cls', nn.initializers.zeros, (1, 1, c))
-    cls = jnp.tile(cls, [n, 1, 1])
-    x = jnp.concatenate([cls, x], axis=1)
+        # Here, x is a grid of embeddings.
 
-    # Transformer.
-    x = Transformer(name='Transformer', **self.transformer_config)(x, train=train)
+        n, h, w, c = x.shape
+        x = jnp.reshape(x, [n, h * w, c])
 
-    # Only keep the classification token.
-    x = x[:, 0]
+        # Add the classification token.
+        cls = self.param("cls", nn.initializers.zeros, (1, 1, c))
+        cls = jnp.tile(cls, [n, 1, 1])
+        x = jnp.concatenate([cls, x], axis=1)
 
-    # Give a name to the activation before the last dense layer.
-    x = IdentityLayer(name='pre_logits')(x)
+        # Transformer.
+        x = Encoder(name="Transformer", **self.transformer_config)(x, train=train)
 
-    # Classification head.
-    x = nn.Dense(
-        features=self.num_classes,
-        name='head',
-        kernel_init=nn.initializers.zeros,
-        bias_init=nn.initializers.constant(self.head_bias_init))(x)
-    return x
+        # Only keep the classification token.
+        x = x[:, 0]
+
+        # Give a name to the activation before the last dense layer.
+        x = IdentityLayer(name="pre_logits")(x)
+
+        # Classification head.
+        x = nn.Dense(
+            features=self.num_classes,
+            name="head",
+            kernel_init=nn.initializers.zeros,
+            bias_init=nn.initializers.constant(self.cls_head_bias_init),
+        )(x)
+        return x
