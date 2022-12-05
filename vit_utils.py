@@ -1,4 +1,5 @@
 # Adapted from https://github.com/google-research/vision_transformer/blob/main/vit_jax/checkpoint.py
+# and https://github.com/google-research/vision_transformer/blob/main/vit_jax/input_pipeline.py
 
 import collections
 from collections import abc
@@ -9,6 +10,21 @@ from packaging import version
 import numpy as np
 import jax.numpy as jnp
 import scipy
+
+import glob
+import os
+import sys
+
+from absl import logging
+import jax
+import numpy as np
+import tensorflow as tf
+import tensorflow_datasets as tfds
+
+import torch
+from torch.utils.data import DataLoader
+import torchvision
+from torchvision import models, transforms
 
 
 def recover_tree(keys, values):
@@ -174,3 +190,81 @@ def load_pretrained(*, pretrained_path, init_params):
         restored_params = _fix_groupnorm(restored_params)
 
     return flax.core.freeze(restored_params)
+
+
+def get_cifar10():
+    """Download (if necessary) and return the CIFAR10 dataset."""
+    # The following is a workaround for this bug: https://github.com/pytorch/vision/issues/5039
+    if sys.platform == "win32":
+        import ssl
+
+        ssl._create_default_https_context = ssl._create_unverified_context
+    # Magic constants taken from: https://docs.ffcv.io/ffcv_examples/cifar10.html
+    mean = torch.tensor([125.307, 122.961, 113.8575]) / 255
+    std = torch.tensor([51.5865, 50.847, 51.255]) / 255
+    transform = transforms.Compose(
+        [transforms.ToTensor(), transforms.Normalize(mean=mean, std=std)]
+    )
+    cifar_train = torchvision.datasets.CIFAR10(
+        "cifar10_train", transform=transform, download=True, train=True
+    )
+    cifar_test = torchvision.datasets.CIFAR10(
+        "cifar10_train", transform=transform, download=True, train=False
+    )
+    return (cifar_train, cifar_test)
+
+
+# NumpyLoader is adapted from https://jax.readthedocs.io/en/latest/notebooks/Neural_Network_and_Data_Loading.html
+def numpy_collate(batch):
+    if isinstance(batch[0], np.ndarray):
+        return np.stack(batch)
+    elif isinstance(batch[0], (tuple, list)):
+        transposed = zip(*batch)
+        return [numpy_collate(samples) for samples in transposed]
+    else:
+        return np.array(batch)
+
+
+class NumpyLoader(DataLoader):
+    def __init__(
+        self,
+        dataset,
+        batch_size=1,
+        shuffle=False,
+        sampler=None,
+        batch_sampler=None,
+        num_workers=0,
+        pin_memory=False,
+        drop_last=False,
+        timeout=0,
+        worker_init_fn=None,
+    ):
+        super(self.__class__, self).__init__(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            sampler=sampler,
+            batch_sampler=batch_sampler,
+            num_workers=num_workers,
+            collate_fn=numpy_collate,
+            pin_memory=pin_memory,
+            drop_last=drop_last,
+            timeout=timeout,
+            worker_init_fn=worker_init_fn,
+        )
+
+
+class FlattenAndCast(object):
+    def __call__(self, pic):
+        return np.ravel(np.array(pic, dtype=jnp.float32))
+
+
+def one_hot(x, k, dtype=jnp.float32):
+    """Create a one-hot encoding of x of size k."""
+    return jnp.array(x[:, None] == jnp.arange(k), dtype)
+
+
+def accuracy(params, images, targets):
+    target_class = jnp.argmax(targets, axis=1)
+    predicted_class = jnp.argmax(batched_predict(params, images), axis=1)
+    return jnp.mean(predicted_class == target_class)
