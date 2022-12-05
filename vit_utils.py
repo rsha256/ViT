@@ -203,7 +203,11 @@ def get_cifar10():
     mean = torch.tensor([125.307, 122.961, 113.8575]) / 255
     std = torch.tensor([51.5865, 50.847, 51.255]) / 255
     transform = transforms.Compose(
-        [transforms.ToTensor(), transforms.Normalize(mean=mean, std=std)]
+        [
+            transforms.ToTensor(),
+            # transforms.Normalize(mean=mean, std=std),
+            transforms.Resize(224),
+        ]
     )
     cifar_train = torchvision.datasets.CIFAR10(
         "cifar10_train", transform=transform, download=True, train=True
