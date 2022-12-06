@@ -220,13 +220,13 @@ def get_cifar10():
 
 # NumpyLoader is adapted from https://jax.readthedocs.io/en/latest/notebooks/Neural_Network_and_Data_Loading.html
 def numpy_collate(batch):
-    if isinstance(batch[0], np.ndarray):
-        return np.stack(batch)
+    if isinstance(batch[0], torch.Tensor):
+        return np.stack([b.numpy() for b in list(batch)]).reshape(1, -1)
     elif isinstance(batch[0], (tuple, list)):
         transposed = zip(*batch)
         return [numpy_collate(samples) for samples in transposed]
     else:
-        return np.array(batch)
+        return np.array(batch).reshape(1, -1)
 
 
 class NumpyLoader(DataLoader):
@@ -268,7 +268,27 @@ def one_hot(x, k, dtype=jnp.float32):
     return jnp.array(x[:, None] == jnp.arange(k), dtype)
 
 
-def accuracy(params, images, targets):
-    target_class = jnp.argmax(targets, axis=1)
-    predicted_class = jnp.argmax(batched_predict(params, images), axis=1)
-    return jnp.mean(predicted_class == target_class)
+def accumulate_gradient(loss_and_grad_fn, params, images, labels, accum_steps):
+    """Accumulate gradient over multiple steps to save on memory."""
+    if accum_steps and accum_steps > 1:
+        assert (
+            images.shape[0] % accum_steps == 0
+        ), f"Bad accum_steps {accum_steps} for batch size {images.shape[0]}"
+        step_size = images.shape[0] // accum_steps
+        l, g = loss_and_grad_fn(params, images[:step_size], labels[:step_size])
+
+        def acc_grad_and_loss(i, l_and_g):
+            imgs = jax.lax.dynamic_slice(
+                images, (i * step_size, 0, 0, 0), (step_size,) + images.shape[1:]
+            )
+            lbls = jax.lax.dynamic_slice(
+                labels, (i * step_size, 0), (step_size, labels.shape[1])
+            )
+            li, gi = loss_and_grad_fn(params, imgs, lbls)
+            l, g = l_and_g
+            return (l + li, jax.tree_map(lambda x, y: x + y, g, gi))
+
+        l, g = jax.lax.fori_loop(1, accum_steps, acc_grad_and_loss, (l, g))
+        return jax.tree_map(lambda x: x / accum_steps, (l, g))
+    else:
+        return loss_and_grad_fn(params, images, labels)
