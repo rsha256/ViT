@@ -131,3 +131,5 @@ dmypy.json
 # For ViT project
 checkpoints/
 cifar10_train/
+vision_transformer/
+ViT-B_32.npz
