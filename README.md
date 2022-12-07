@@ -5,7 +5,7 @@ This ViT Project achieves over 80% accuracy on Cifar-10, outperforming LeNet and
 
 To set up the environment needed for this project, run
 ``` 
-conda env create -n cs182
+conda create --name cs182 python=3.10
 conda activate cs182
 pip install -r requirements.txt
 ```
