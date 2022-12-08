@@ -9,3 +9,5 @@ conda create --name cs182 python=3.10
 conda activate cs182
 pip install -r requirements.txt
 ```
+
+Note you may need to run `conda deactivate` before running `conda activate cs182` if you are already in an environment.
